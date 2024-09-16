@@ -1,0 +1,463 @@
+---
+title: "Exploratory analysis on album dataset"
+output:
+  html_document: default
+  pdf_document: default
+date: "2024-01-23"
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+### This project explors the "album.csv" dataset. It works with music genres, artists and music albums. 
+
+## Data preprocessing 
+
+First, I load the necessary libraries (install packages, id needed), read the data set and print its content!
+```{r csv_file_path}
+# Install and load the tidyverse package if not already installed
+ # install.packages("tidyverse")
+ # install.packages("ggplot2")
+ # install.packages("spData")
+library(tidyverse)
+library(stringr)
+library(spData)
+library(sf)
+library(tmap)
+
+# Set the path to your CSV file
+csv_file_path <- "album.csv"
+
+# Read the CSV file
+data <- read.csv(csv_file_path)
+
+# Print the contents of the data
+#print(data)
+
+```
+
+
+
+Then, the dataset is processed, such that each row corresponds to one genre for each artist. Each artist corresponds to as many rows as the genres they participate to.
+
+```{r data_processed}
+data_processed <- data %>%
+  # Split the 'genre' column into a list of genres
+  separate_rows(genre, sep = ",") %>%
+  # Remove leading and trailing whitespaces
+  mutate(across(c(genre, artist, album), str_trim))
+
+#print(data_processed)
+
+
+
+data_processed_new <- data_processed %>%
+  # Extract year from the 'album' column
+  mutate(year = str_extract(album, "\\((\\d{4})\\)"),
+         album = str_replace(album, "\\(\\d{4}\\)", "")) %>%
+  # Remove leading and trailing whitespaces
+  mutate(across(c(genre, artist, album), str_trim))
+
+# Print the new processed data with the new "year" column
+#print(data_processed_new)
+```
+
+
+The final step of the pre-processing involves the creation of "artists" , as required for question 4.
+
+```{r artists}
+#Create "artists" for Question 4 
+
+# Create 'artists' data frame
+artists <- data_processed_new %>%
+  group_by(artist) %>%
+  summarize(
+    primary_genre = first(genre),
+    secondary_genre = ifelse(n() > 1, nth(genre, 2), NA_character_),
+    .groups = 'drop'
+  )
+
+
+# Replace NAs in secondary_genre with corresponding values from primary_genre
+artists <- artists %>%
+  mutate(secondary_genre = ifelse(is.na(secondary_genre), primary_genre, secondary_genre))
+
+
+# Print the 'artists' data frame
+#print(artists)
+
+
+# Print the "Wim Mertens" row as a test
+artist_data_filtered <- artists %>%
+  filter(artist == "Mertens, Wim")
+
+# Print the filtered data
+print(artist_data_filtered)
+
+```
+
+
+## Artist Percentage per Genre
+
+```{r genre_percentage}
+# Calculate the percentage of artists for each genre
+genre_percentage <- data_processed_new %>%
+  group_by(genre, artist) %>%
+  summarize(Base_Artist_Genre = first(genre)) %>%
+  group_by(Base_Artist_Genre) %>%
+  summarize(Percentage = n() / n_distinct(data_processed_new$artist) * 100)
+
+# Print the results
+#print(genre_percentage)
+
+
+# Create a bar chart
+ggplot(genre_percentage, aes(x = Base_Artist_Genre, y = Percentage, fill = Base_Artist_Genre)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Percentage of Artists in Each Genre",
+       x = "Genre",
+       y = "Percentage") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+# Album Distribution per Year
+
+```{r data_processed_new}
+# Remove non-numeric characters from the "year" column and convert to numeric
+data_processed_new$year <- as.numeric(gsub("\\D", "", data_processed_new$year))
+
+# Plot the histogram
+ggplot(data_processed_new, aes(x = year)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Albums per Year",
+       x = "Year",
+       y = "Number of Albums") +
+  theme_minimal()
+
+
+
+# Plot the histogram with normalized y-axis
+ggplot(data_processed_new, aes(x = year)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black", alpha = 0.7, aes(y = ..density..)) +
+  labs(title = "Normalised Distribution of Albums per Year",
+       x = "Year",
+       y = "Proportion of Albums") +
+  theme_minimal()
+
+
+```
+
+
+## Album Distribution for top 5 genres, per Year
+
+```{r selected_data}
+# Select the relevant columns and filter out NAs in the year column
+selected_data <- data_processed_new %>%
+  select(genre, year) %>%
+  filter(!is.na(year))
+
+# Count the occurrences of each genre in each year
+genre_counts <- selected_data %>%
+  group_by(year, genre) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count))
+
+# Identify the top 5 genres
+top_genres <- genre_counts %>%
+  group_by(genre) %>%
+  summarize(total_count = sum(count)) %>%
+  top_n(5, total_count) %>%
+  pull(genre)
+
+# Filter the data for the top 5 genres
+top_genre_data <- genre_counts %>%
+  filter(genre %in% top_genres)
+
+# Plot the distribution of the top 5 genres over time
+ggplot(top_genre_data, aes(x = year, y = count, color = genre)) +
+  geom_line() +
+  labs(title = "Distribution of Top 5 Genres Over Time",
+       x = "Year",
+       y = "Number of Albums") +
+  theme_minimal()
+
+
+
+```
+
+
+## Exploring Relationships among genres - Two Way Table
+
+This part creates a mosaic plot, using a two way table ("artists") in order to visualise the relationships between the primary and secondary genres!
+
+```{r two_way, fig.width=10, fig.height=8}
+two_way <- table(artists$primary_genre, artists$secondary_genre)
+summary(two_way)
+mosaicplot(two_way ,main="Relationship Between Primary and Secondary Genres",las=2)
+
+
+```
+
+
+
+
+
+First, I create the new column "country_in_title" in "data_processed_new "with the country name that appears on each album title (or NA - if no country is included on the title)
+
+```{r world}
+# Read world data set, print and plot it!
+world <- st_read(system.file("shapes/world.gpkg", package="spData"))
+#print(world)
+plot(world)
+
+
+# Extract unique country names from the world data set
+country_names <- world$name_long
+
+# Create a new column in data_processed_new for the first country name found in each album title
+data_processed_map <- data %>%
+  mutate(country_in_title = sapply(album, function(title) {
+    found_country <- country_names[str_detect(title, country_names)]
+    if (length(found_country) > 0) found_country[1] else NA
+  }))
+
+
+```
+
+
+Then, I calculate how many times each country appears on album titles and create the choropleth map with this information!
+
+First map: Using binning!
+```{r map}
+#Aggregate the data to count the frequency of each country
+country_frequency <- data_processed_map %>%
+  group_by(country_in_title) %>%
+  summarize(frequency = n()) %>%
+  filter(!is.na(country_in_title))
+
+# Load the world shapefile
+world_shapefile <- st_read(system.file("shapes/world.gpkg", package="spData"))
+
+# Merge the data with the world shapefile
+map_data <- left_join(world_shapefile, country_frequency, by = c("name_long" = "country_in_title"))
+
+# Plot the choropleth map
+tm_shape(map_data) +
+  tm_borders(lwd = 0.5) +
+  tm_fill("frequency", style = "jenks", title = "Frequency", palette = "Blues") +
+  tm_layout(title = "Choropleth Map (with binning) of Country Frequencies in Song Titles") +
+  tm_legend(legend.title.size = 1.5, position = c("right", "bottom"))
+
+
+
+```
+
+Second map: Using a color scale!
+```{r scale}
+#Plot the choropleth map with a color scale
+tm_shape(map_data) +
+  tm_borders(lwd = 0.5) +
+  tm_fill("frequency", style = "cont", title = "Frequency", palette = "Blues") +
+  tm_layout(title = "Choropleth Map(with scale) of Country Frequencies in Song Titles") +
+  tm_legend(legend.title.size = 1.5, position = c("right", "bottom"))
+
+
+
+
+``` 
+
+```{r }
+
+# PLOT USING GGPLOT
+#library(tidyverse)
+#library(sf)
+#library(ggplot2)
+
+# Aggregate the data to count the frequency of each country
+# country_frequency <- data_processed_new %>%
+#   group_by(country_in_title) %>%
+#   summarize(frequency = n()) %>%
+#   filter(!is.na(country_in_title))
+# 
+# # Load the world shapefile
+# world_shapefile <- st_read(system.file("shapes/world.gpkg", package="spData"))
+# 
+# # Merge the data with the world shapefile
+# map_data <- left_join(world_shapefile, country_frequency, by = c("name_long" = "country_in_title"))
+# 
+# # Plot the choropleth map using ggplot2
+# ggplot(map_data, aes(fill = frequency)) +
+#   geom_sf(color = "white", size = 0.2) +
+#   scale_fill_viridis_c(name = "Frequency", option = "plasma", na.value = "white") +
+#   theme_minimal() +
+#   labs(title = "Choropleth Map of Country Frequencies in Song Titles")
+
+
+```
+
+
+## Shinny App! 
+
+
+### a) Input: Dropdown list with artists, Output: Chosen artist's albums!
+
+
+```{r shiny-app-a}
+library(shiny)
+
+# Define UI for application
+ui <- fluidPage(
+  titlePanel("Album Explorer"),
+  
+  # Dropdown for selecting artist
+  selectInput("artist", "Select Artist:", choices = unique(data_processed_new$artist)),
+  
+  # Table to display albums
+  tableOutput("album_table")
+)
+
+# Define server logic
+server <- function(input, output) {
+  # Filter data based on selected artist
+  selected_data <- reactive({
+    filter(data, artist == input$artist)
+  })
+  
+  # Render the table
+  output$album_table <- renderTable({
+    selected_data()
+  })
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
+
+
+```
+
+
+### b) Input: Dropdown list with genres, Output: Chosen genre's albums (alphabetically)!
+
+```{r shiny-app-b}
+
+# Define the Shiny app
+shinyApp(
+  # Define UI components
+  ui = fluidPage(
+    titlePanel("Albums by Genre"),
+    sidebarLayout(
+      sidebarPanel(
+        # Dropdown for selecting genre
+        selectInput("genre", "Select Genre", choices = unique(data_processed_new$genre))
+      ),
+      mainPanel(
+        # Table to display albums
+        tableOutput("albumTable")
+      )
+    )
+  ),
+  
+  # Define server logic
+  server = function(input, output) {
+    # Filter data based on selected genre
+    filtered_data <- reactive({
+      data_processed_new %>%
+        filter(str_detect(genre, input$genre)) %>%
+        arrange(album)  # Arrange alphabetically by album
+    })
+
+    # Output the table of albums
+    output$albumTable <- renderTable({
+      filtered_data()
+    })
+  }
+)
+```
+
+### c) Input: Dropdown list with genres, Output: Chosen genre's artists (alphabetically)!
+
+```{r shiny-app-c}
+# Define the Shiny app
+shinyApp(
+  # Define UI components
+  ui = fluidPage(
+    titlePanel("Artists by Genre"),
+    sidebarLayout(
+      sidebarPanel(
+        # Dropdown for selecting genre
+        selectInput("genre_artist", "Select Genre", choices = unique(data_processed_new$genre))
+      ),
+      mainPanel(
+        # Table to display artists
+        tableOutput("artistTable")
+      )
+    )
+  ),
+  
+  # Define server logic
+  server = function(input, output) {
+    # Filter data based on selected genre for artists
+    filtered_data_artist <- reactive({
+      artists %>%
+        filter(str_detect(primary_genre, input$genre_artist) | str_detect(secondary_genre, input$genre_artist)) %>%
+        arrange(artist)  # Arrange alphabetically by artist
+    })
+
+    # Output the table of artists
+    output$artistTable <- renderTable({
+      filtered_data_artist()
+    })
+  }
+)
+
+```
+
+### d) Input: Dropdown list with genres, Output: Plot of the Distribution of this genres' albums accross time!
+
+```{r shiny-app-d}
+# Define the Shiny app
+shinyApp(
+  # Define UI components
+  ui = fluidPage(
+    titlePanel("Album Distribution Over Time"),
+    sidebarLayout(
+      sidebarPanel(
+        # Dropdown for selecting genre
+        selectInput("genre_time", "Select Genre", choices = unique(data_processed_new$genre))
+      ),
+      mainPanel(
+        # Plot to display distribution over time
+        plotOutput("albumDistributionPlot")
+      )
+    )
+  ),
+  
+  # Define server logic
+  server = function(input, output) {
+    # Filter data based on selected genre for album distribution over time
+    filtered_data_time <- reactive({
+      selected_data <- data_processed_new %>%
+        filter(str_detect(genre, input$genre_time)) %>%
+        filter(!is.na(year))  # Remove entries without a year
+    })
+
+    # Output the plot of album distribution over time
+    output$albumDistributionPlot <- renderPlot({
+      ggplot(filtered_data_time(), aes(x = year)) +
+        geom_histogram(binwidth = 1, fill = "blue", color = "black", alpha = 0.7) +
+        labs(title = paste("Distribution of", input$genre_time, "Albums Over Time"),
+             x = "Year",
+             y = "Number of Albums") +
+        theme_minimal()
+    })
+  }
+)
+
+
+```
+
+
